@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   getDashboard,
   getProducts,
+  createProduct,
   getOrders,
   getUsers,
 } = require('../controllers/adminController');
@@ -12,6 +13,7 @@ const {
 // router.use(protect, admin);
 router.get('/dashboard', getDashboard);
 router.get('/products', getProducts);
+router.post('/products', createProduct);
 router.get('/orders', getOrders);
 router.get('/users', getUsers);
 

@@ -1,3 +1,5 @@
+const Product = require('../models/Product');
+
 const dashboardData = {
   stats: {
     totalRevenue: 409500,
@@ -40,21 +42,45 @@ const dashboardData = {
 };
 
 const products = [
-  { id: 'PRD-001', name: 'Classic Leather Jacket', category: 'Men', brand: 'Zara', price: 189.99, stock: 42, status: 'Active' },
-  { id: 'PRD-002', name: 'Slim Fit Chinos', category: 'Men', brand: "Levi's", price: 64.99, stock: 87, status: 'Active' },
-  { id: 'PRD-003', name: 'Floral Summer Dress', category: 'Women', brand: 'H&M', price: 79.99, stock: 0, status: 'Out of Stock' },
-  { id: 'PRD-004', name: 'Air Cushion Sneakers', category: 'Men', brand: 'Nike', price: 129.99, stock: 34, status: 'Active' },
-  { id: 'PRD-005', name: 'Cashmere Sweater', category: 'Women', brand: 'Zara', price: 149.99, stock: 21, status: 'Active' },
-  { id: 'PRD-006', name: 'Denim Jacket', category: 'Men', brand: "Levi's", price: 94.99, stock: 56, status: 'Active' },
-  { id: 'PRD-007', name: 'Pleated Midi Skirt', category: 'Women', brand: 'H&M', price: 54.99, stock: 0, status: 'Out of Stock' },
-  { id: 'PRD-008', name: 'Running Shoes Pro', category: 'Men', brand: 'Adidas', price: 119.99, stock: 15, status: 'Active' },
-  { id: 'PRD-009', name: 'Sequin Evening Gown', category: 'Women', brand: 'Zara', price: 249.99, stock: 8, status: 'Active' },
-  { id: 'PRD-010', name: 'Kids Graphic Hoodie', category: 'Kids', brand: 'Puma', price: 49.99, stock: 63, status: 'Active' },
-  { id: 'PRD-011', name: 'Formal Blazer', category: 'Men', brand: 'Zara', price: 179.99, stock: 0, status: 'Draft' },
-  { id: 'PRD-012', name: 'Crossbody Handbag', category: 'Accessories', brand: 'H&M', price: 69.99, stock: 30, status: 'Active' },
-  { id: 'PRD-013', name: 'Ankle Strap Heels', category: 'Women', brand: 'Zara', price: 89.99, stock: 22, status: 'Active' },
-  { id: 'PRD-014', name: 'Kids Denim Overalls', category: 'Kids', brand: "Levi's", price: 44.99, stock: 48, status: 'Active' },
-  { id: 'PRD-015', name: 'Oversized Tee', category: 'Men', brand: 'Nike', price: 34.99, stock: 120, status: 'Active' },
+  {
+    id: 'PRD-001',
+    name: 'Classic Leather Jacket',
+    category: 'Men',
+    subCategory: 'Jackets',
+    brand: 'Zara',
+    price: 189.99,
+    stock: 42,
+    colors: ['Black'],
+    sizes: ['M', 'L', 'XL'],
+    variantStock: [
+      { color: 'Black', size: 'M', stock: 14 },
+      { color: 'Black', size: 'L', stock: 16 },
+      { color: 'Black', size: 'XL', stock: 12 },
+    ],
+    imageUrl: '',
+  },
+  {
+    id: 'PRD-002',
+    name: 'Slim Fit Chinos',
+    category: 'Men',
+    subCategory: 'Formals',
+    brand: "Levi's",
+    price: 64.99,
+    stock: 87,
+    colors: ['Navy', 'Beige'],
+    sizes: ['S', 'M', 'L', 'XL'],
+    variantStock: [
+      { color: 'Navy', size: 'S', stock: 10 },
+      { color: 'Navy', size: 'M', stock: 12 },
+      { color: 'Navy', size: 'L', stock: 11 },
+      { color: 'Navy', size: 'XL', stock: 9 },
+      { color: 'Beige', size: 'S', stock: 12 },
+      { color: 'Beige', size: 'M', stock: 13 },
+      { color: 'Beige', size: 'L', stock: 11 },
+      { color: 'Beige', size: 'XL', stock: 9 },
+    ],
+    imageUrl: '',
+  },
 ];
 
 const orders = [
@@ -95,10 +121,164 @@ exports.getDashboard = async (req, res) => {
 };
 
 exports.getProducts = async (req, res) => {
-  res.status(200).json({
-    success: true,
-    data: products,
-  });
+  try {
+    const dbProducts = await Product.find().sort({ createdAt: -1 }).lean();
+
+    if (dbProducts.length > 0) {
+      return res.status(200).json({
+        success: true,
+        data: dbProducts,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: products,
+    });
+  } catch (error) {
+    return res.status(200).json({
+      success: true,
+      data: products,
+    });
+  }
+};
+
+// @desc    Create product
+// @route   POST /api/admin/products
+// @access  Public (can be protected later)
+exports.createProduct = async (req, res) => {
+  try {
+    const {
+      name,
+      description,
+      brand,
+      category,
+      subCategory,
+      price,
+      colors,
+      sizes,
+      variantStock,
+      imageUrls,
+      coverImageUrl,
+      imageUrl,
+    } = req.body;
+
+    if (!name || !brand || !category) {
+      return res.status(400).json({
+        success: false,
+        message: 'name, brand and category are required',
+      });
+    }
+
+    if (!Array.isArray(colors) || colors.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one color is required',
+      });
+    }
+
+    if (!Array.isArray(sizes) || sizes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one size is required',
+      });
+    }
+
+    if (!Array.isArray(variantStock) || variantStock.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'variantStock is required',
+      });
+    }
+
+    const requiredCombos = new Set();
+    colors.forEach((color) => {
+      sizes.forEach((size) => {
+        requiredCombos.add(`${color}__${size}`);
+      });
+    });
+
+    const normalizedVariantStock = [];
+    const seenCombos = new Set();
+
+    for (const entry of variantStock) {
+      const color = String(entry.color || '');
+      const size = String(entry.size || '');
+      const stockValue = Number(entry.stock);
+      const key = `${color}__${size}`;
+
+      if (!requiredCombos.has(key)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid color-size variant: ${color} / ${size}`,
+        });
+      }
+
+      if (!Number.isFinite(stockValue) || stockValue < 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid stock for variant: ${color} / ${size}`,
+        });
+      }
+
+      seenCombos.add(key);
+      normalizedVariantStock.push({
+        color,
+        size,
+        stock: Math.floor(stockValue),
+      });
+    }
+
+    if (seenCombos.size !== requiredCombos.size) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide stock for every selected color-size combination',
+      });
+    }
+
+    const totalStock = normalizedVariantStock.reduce((sum, item) => sum + item.stock, 0);
+
+    const normalizedImageUrls = Array.isArray(imageUrls)
+      ? imageUrls
+          .map((url) => String(url || '').trim())
+          .filter((url) => url.length > 0)
+      : [];
+
+    const normalizedCoverImage = String(coverImageUrl || imageUrl || '').trim();
+    if (normalizedCoverImage && !normalizedImageUrls.includes(normalizedCoverImage)) {
+      normalizedImageUrls.unshift(normalizedCoverImage);
+    }
+
+    const finalCoverImageUrl = normalizedCoverImage || normalizedImageUrls[0] || '';
+
+    const product = await Product.create({
+      name: String(name).trim(),
+      description: String(description || '').trim(),
+      brand: String(brand).trim(),
+      category: String(category).trim(),
+      subCategory: String(subCategory || '').trim(),
+      price: Number(price),
+      stock: totalStock,
+      colors,
+      sizes,
+      variantStock: normalizedVariantStock,
+      imageUrls: normalizedImageUrls,
+      coverImageUrl: finalCoverImageUrl,
+      imageUrl: finalCoverImageUrl,
+    });
+
+    return res.status(201).json({
+      success: true,
+      data: product,
+      message: 'Product created successfully',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create product',
+      error: error.message,
+    });
+  }
 };
 
 exports.getOrders = async (req, res) => {
