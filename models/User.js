@@ -31,10 +31,18 @@ const userSchema = new mongoose.Schema(
       required: [true, 'Please provide last name'],
       trim: true,
     },
+    address: {
+      type: String,
+      trim: true,
+    },
+    phoneNumber: {
+      type: String,
+      trim: true,
+    },
     role: {
       type: String,
-      enum: ['user', 'admin'],
-      default: 'user',
+      enum: ['customer', 'admin', 'staff', 'manager'],
+      default: 'customer',
     },
     isActive: {
       type: Boolean,

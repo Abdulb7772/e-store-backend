@@ -13,7 +13,9 @@ const generateToken = (id) => {
 // @access  Public
 exports.signup = async (req, res) => {
   try {
-    const { emailPhone, password, firstName, lastName, role } = req.body;
+    const { emailPhone, password, firstName, lastName, address, phoneNumber, role } = req.body;
+    const allowedRoles = new Set(['customer', 'admin', 'staff', 'manager']);
+    const normalizedRole = allowedRoles.has(role) ? role : 'customer';
 
     // Validate input
     if (!emailPhone || !password || !firstName || !lastName) {
@@ -39,7 +41,9 @@ exports.signup = async (req, res) => {
       password,
       firstName,
       lastName,
-      ...(role === 'admin' && { role: 'admin' }),
+      address,
+      phoneNumber,
+      role: normalizedRole,
     });
 
     if (user) {
@@ -52,6 +56,9 @@ exports.signup = async (req, res) => {
           username: user.username,
           firstName: user.firstName,
           lastName: user.lastName,
+          address: user.address,
+          phoneNumber: user.phoneNumber,
+          role: user.role,
           token: generateToken(user._id),
         },
       });
@@ -123,6 +130,8 @@ exports.signin = async (req, res) => {
         username: user.username,
         firstName: user.firstName,
         lastName: user.lastName,
+        address: user.address,
+        phoneNumber: user.phoneNumber,
         role: user.role,
         token: generateToken(user._id),
       },
