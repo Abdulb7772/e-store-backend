@@ -1,4 +1,83 @@
 const Product = require('../models/Product');
+const {
+  upsertProductStock,
+  getStocksByProductIds,
+  deleteProductStock,
+} = require('../stocks/stockService');
+
+const makeSkuCandidate = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let value = 'SKU-';
+
+  for (let i = 0; i < 8; i += 1) {
+    value += chars[Math.floor(Math.random() * chars.length)];
+  }
+
+  return value;
+};
+
+const generateUniqueSku = async (usedSkus = new Set()) => {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const sku = makeSkuCandidate();
+
+    if (usedSkus.has(sku)) {
+      continue;
+    }
+
+    const exists = await Product.exists({ sku });
+    if (!exists) {
+      usedSkus.add(sku);
+      return sku;
+    }
+  }
+
+  throw new Error('Unable to generate unique SKU');
+};
+
+const validateAndNormalizeVariantStock = (colors = [], sizes = [], variantStock = []) => {
+  if (!Array.isArray(variantStock) || variantStock.length === 0) {
+    return { error: 'variantStock is required' };
+  }
+
+  const requiredCombos = new Set();
+  colors.forEach((color) => {
+    sizes.forEach((size) => {
+      requiredCombos.add(`${color}__${size}`);
+    });
+  });
+
+  const normalizedVariantStock = [];
+  const seenCombos = new Set();
+
+  for (const entry of variantStock) {
+    const color = String(entry.color || '');
+    const size = String(entry.size || '');
+    const stockValue = Number(entry.stock);
+    const key = `${color}__${size}`;
+
+    if (!requiredCombos.has(key)) {
+      return { error: `Invalid color-size variant: ${color} / ${size}` };
+    }
+
+    if (!Number.isFinite(stockValue) || stockValue < 0) {
+      return { error: `Invalid stock for variant: ${color} / ${size}` };
+    }
+
+    seenCombos.add(key);
+    normalizedVariantStock.push({
+      color,
+      size,
+      stock: Math.floor(stockValue),
+    });
+  }
+
+  if (seenCombos.size !== requiredCombos.size) {
+    return { error: 'Please provide stock for every selected color-size combination' };
+  }
+
+  const totalStock = normalizedVariantStock.reduce((sum, item) => sum + item.stock, 0);
+  return { normalizedVariantStock, totalStock };
+};
 
 const dashboardData = {
   stats: {
@@ -44,6 +123,7 @@ const dashboardData = {
 const products = [
   {
     id: 'PRD-001',
+    sku: 'SKU-PRD001AA',
     name: 'Classic Leather Jacket',
     category: 'Men',
     subCategory: 'Jackets',
@@ -61,6 +141,7 @@ const products = [
   },
   {
     id: 'PRD-002',
+    sku: 'SKU-PRD002BB',
     name: 'Slim Fit Chinos',
     category: 'Men',
     subCategory: 'Formals',
@@ -125,9 +206,42 @@ exports.getProducts = async (req, res) => {
     const dbProducts = await Product.find().sort({ createdAt: -1 }).lean();
 
     if (dbProducts.length > 0) {
+      const usedSkus = new Set(
+        dbProducts
+          .map((product) => String(product.sku || '').trim())
+          .filter((sku) => sku.length > 0),
+      );
+
+      const skuHydratedProducts = [];
+      for (const product of dbProducts) {
+        if (product.sku && String(product.sku).trim().length > 0) {
+          skuHydratedProducts.push(product);
+          continue;
+        }
+
+        const sku = await generateUniqueSku(usedSkus);
+        await Product.updateOne({ _id: product._id }, { $set: { sku } });
+        skuHydratedProducts.push({ ...product, sku });
+      }
+
+      const stockMap = await getStocksByProductIds(skuHydratedProducts.map((product) => product._id));
+      const hydratedProducts = skuHydratedProducts.map((product) => {
+        const stockDoc = stockMap.get(String(product._id));
+
+        if (!stockDoc) {
+          return product;
+        }
+
+        return {
+          ...product,
+          variantStock: stockDoc.variantStock,
+          stock: stockDoc.totalStock,
+        };
+      });
+
       return res.status(200).json({
         success: true,
-        data: dbProducts,
+        data: hydratedProducts,
       });
     }
 
@@ -191,52 +305,15 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    const requiredCombos = new Set();
-    colors.forEach((color) => {
-      sizes.forEach((size) => {
-        requiredCombos.add(`${color}__${size}`);
-      });
-    });
-
-    const normalizedVariantStock = [];
-    const seenCombos = new Set();
-
-    for (const entry of variantStock) {
-      const color = String(entry.color || '');
-      const size = String(entry.size || '');
-      const stockValue = Number(entry.stock);
-      const key = `${color}__${size}`;
-
-      if (!requiredCombos.has(key)) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid color-size variant: ${color} / ${size}`,
-        });
-      }
-
-      if (!Number.isFinite(stockValue) || stockValue < 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid stock for variant: ${color} / ${size}`,
-        });
-      }
-
-      seenCombos.add(key);
-      normalizedVariantStock.push({
-        color,
-        size,
-        stock: Math.floor(stockValue),
-      });
-    }
-
-    if (seenCombos.size !== requiredCombos.size) {
+    const validation = validateAndNormalizeVariantStock(colors, sizes, variantStock);
+    if (validation.error) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide stock for every selected color-size combination',
+        message: validation.error,
       });
     }
 
-    const totalStock = normalizedVariantStock.reduce((sum, item) => sum + item.stock, 0);
+    const { normalizedVariantStock, totalStock } = validation;
 
     const normalizedImageUrls = Array.isArray(imageUrls)
       ? imageUrls
@@ -250,32 +327,132 @@ exports.createProduct = async (req, res) => {
     }
 
     const finalCoverImageUrl = normalizedCoverImage || normalizedImageUrls[0] || '';
+    const sku = await generateUniqueSku();
 
     const product = await Product.create({
       name: String(name).trim(),
       description: String(description || '').trim(),
       brand: String(brand).trim(),
+      sku,
       category: String(category).trim(),
       subCategory: String(subCategory || '').trim(),
       price: Number(price),
       stock: totalStock,
       colors,
       sizes,
-      variantStock: normalizedVariantStock,
       imageUrls: normalizedImageUrls,
       coverImageUrl: finalCoverImageUrl,
       imageUrl: finalCoverImageUrl,
     });
 
+    await upsertProductStock(product._id, normalizedVariantStock);
+
     return res.status(201).json({
       success: true,
-      data: product,
+      data: {
+        ...product.toObject(),
+        variantStock: normalizedVariantStock,
+        stock: totalStock,
+      },
       message: 'Product created successfully',
     });
   } catch (error) {
     return res.status(500).json({
       success: false,
       message: 'Failed to create product',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Update product stock (separate stock storage)
+// @route   PUT /api/admin/products/:id/stock
+// @access  Public (can be protected later)
+exports.updateProductStock = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { variantStock } = req.body;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product id is required',
+      });
+    }
+
+    const product = await Product.findById(id).lean();
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found',
+      });
+    }
+
+    const validation = validateAndNormalizeVariantStock(product.colors || [], product.sizes || [], variantStock);
+    if (validation.error) {
+      return res.status(400).json({
+        success: false,
+        message: validation.error,
+      });
+    }
+
+    const { normalizedVariantStock, totalStock } = validation;
+
+    await upsertProductStock(id, normalizedVariantStock);
+    await Product.findByIdAndUpdate(id, { $set: { stock: totalStock } });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        productId: id,
+        variantStock: normalizedVariantStock,
+        stock: totalStock,
+      },
+      message: 'Product stock updated successfully',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update product stock',
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Delete product
+// @route   DELETE /api/admin/products/:id
+// @access  Public (can be protected later)
+exports.deleteProduct = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product id is required',
+      });
+    }
+
+    const deletedProduct = await Product.findByIdAndDelete(id);
+
+    if (!deletedProduct) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found',
+      });
+    }
+
+    await deleteProductStock(id);
+
+    return res.status(200).json({
+      success: true,
+      data: deletedProduct,
+      message: 'Product deleted successfully',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to delete product',
       error: error.message,
     });
   }

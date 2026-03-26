@@ -4,6 +4,8 @@ const {
   getDashboard,
   getProducts,
   createProduct,
+  updateProductStock,
+  deleteProduct,
   getOrders,
   getUsers,
 } = require('../controllers/adminController');
@@ -14,6 +16,8 @@ const {
 router.get('/dashboard', getDashboard);
 router.get('/products', getProducts);
 router.post('/products', createProduct);
+router.put('/products/:id/stock', updateProductStock);
+router.delete('/products/:id', deleteProduct);
 router.get('/orders', getOrders);
 router.get('/users', getUsers);
 
