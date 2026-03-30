@@ -1,5 +1,9 @@
+const mongoose = require('mongoose');
 const Product = require('../models/Product');
+const Order = require('../models/Order');
+const Stock = require('../models/Stock');
 const User = require('../models/User');
+const { storeDeclinedOrder } = require('../declined-orders/declinedOrderService');
 const {
   upsertProductStock,
   getStocksByProductIds,
@@ -11,6 +15,150 @@ const ALLOWED_PROMOTION_TAGS = new Set(['', 'new-arrivals', 'top-sales']);
 const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const roundToCurrency = (value) => Math.round(Number(value) * 100) / 100;
+
+const normalizeStringArray = (items = []) => {
+  if (!Array.isArray(items)) return [];
+
+  const seen = new Set();
+  const normalized = [];
+
+  for (const item of items) {
+    const value = String(item || '').trim();
+    const key = value.toLowerCase();
+
+    if (!value || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalized.push(value);
+  }
+
+  return normalized;
+};
+
+const normalizeVariantKey = (value = '') => String(value || '').trim().toLowerCase();
+
+const restoreStockFromOrder = async (orderDoc, session) => {
+  const items = Array.isArray(orderDoc?.items) ? orderDoc.items : [];
+  if (items.length === 0) return;
+
+  const restoreDemand = new Map();
+
+  items.forEach((item) => {
+    const productId = String(item?.productId || '').trim();
+    if (!productId) return;
+
+    const color = String(item?.color || '').trim();
+    const size = String(item?.size || '').trim();
+    const quantity = Math.max(1, Number(item?.quantity) || 1);
+    const key = `${productId}__${normalizeVariantKey(color)}__${normalizeVariantKey(size)}`;
+
+    const existing = restoreDemand.get(key);
+    if (existing) {
+      existing.quantity += quantity;
+    } else {
+      restoreDemand.set(key, { productId, color, size, quantity });
+    }
+  });
+
+  if (restoreDemand.size === 0) return;
+
+  const productIds = Array.from(
+    new Set(Array.from(restoreDemand.values()).map((item) => item.productId)),
+  );
+
+  const [products, stocks] = await Promise.all([
+    Product.find({ _id: { $in: productIds } }).session(session),
+    Stock.find({ productId: { $in: productIds } }).session(session),
+  ]);
+
+  const productMap = new Map(products.map((product) => [String(product._id), product]));
+  const stockMap = new Map(stocks.map((stock) => [String(stock.productId), stock]));
+  const nextVariantStockByProduct = new Map();
+
+  for (const demand of restoreDemand.values()) {
+    const productDoc = productMap.get(demand.productId);
+    if (!productDoc) continue;
+
+    if (!nextVariantStockByProduct.has(demand.productId)) {
+      const stockDoc = stockMap.get(demand.productId);
+      const sourceVariants = Array.isArray(stockDoc?.variantStock) && stockDoc.variantStock.length > 0
+        ? stockDoc.variantStock
+        : productDoc.variantStock;
+
+      nextVariantStockByProduct.set(
+        demand.productId,
+        (Array.isArray(sourceVariants) ? sourceVariants : []).map((item) => ({
+          color: String(item.color || '').trim(),
+          size: String(item.size || '').trim(),
+          stock: Math.max(0, Number(item.stock) || 0),
+        })),
+      );
+    }
+
+    const variants = nextVariantStockByProduct.get(demand.productId) || [];
+    const variantIndex = variants.findIndex(
+      (entry) =>
+        normalizeVariantKey(entry.color) === normalizeVariantKey(demand.color)
+        && normalizeVariantKey(entry.size) === normalizeVariantKey(demand.size),
+    );
+
+    if (variantIndex >= 0) {
+      variants[variantIndex].stock += demand.quantity;
+      continue;
+    }
+
+    variants.push({
+      color: demand.color,
+      size: demand.size,
+      stock: demand.quantity,
+    });
+  }
+
+  const stockBulkOps = [];
+  const productBulkOps = [];
+
+  for (const [productId, variants] of nextVariantStockByProduct.entries()) {
+    const nextTotalStock = variants.reduce(
+      (sum, item) => sum + Math.max(0, Number(item.stock) || 0),
+      0,
+    );
+
+    stockBulkOps.push({
+      updateOne: {
+        filter: { productId },
+        update: {
+          $set: {
+            variantStock: variants,
+            totalStock: nextTotalStock,
+          },
+        },
+        upsert: true,
+      },
+    });
+
+    productBulkOps.push({
+      updateOne: {
+        filter: { _id: productId },
+        update: {
+          $set: {
+            variantStock: variants,
+            stock: nextTotalStock,
+          },
+        },
+      },
+    });
+  }
+
+  if (stockBulkOps.length > 0) {
+    await Stock.bulkWrite(stockBulkOps, { session });
+  }
+
+  if (productBulkOps.length > 0) {
+    await Product.bulkWrite(productBulkOps, { session });
+  }
+};
 
 const makeSkuCandidate = () => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -776,7 +924,7 @@ exports.endCategorySale = async (req, res) => {
 exports.updateProductStock = async (req, res) => {
   try {
     const { id } = req.params;
-    const { variantStock } = req.body;
+    const { variantStock, colors, sizes } = req.body;
 
     if (!id) {
       return res.status(400).json({
@@ -793,7 +941,28 @@ exports.updateProductStock = async (req, res) => {
       });
     }
 
-    const validation = validateAndNormalizeVariantStock(product.colors || [], product.sizes || [], variantStock);
+    const nextColors = Array.isArray(colors)
+      ? normalizeStringArray(colors)
+      : normalizeStringArray(product.colors || []);
+    const nextSizes = Array.isArray(sizes)
+      ? normalizeStringArray(sizes)
+      : normalizeStringArray(product.sizes || []);
+
+    if (nextColors.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one color is required',
+      });
+    }
+
+    if (nextSizes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one size is required',
+      });
+    }
+
+    const validation = validateAndNormalizeVariantStock(nextColors, nextSizes, variantStock);
     if (validation.error) {
       return res.status(400).json({
         success: false,
@@ -804,12 +973,21 @@ exports.updateProductStock = async (req, res) => {
     const { normalizedVariantStock, totalStock } = validation;
 
     await upsertProductStock(id, normalizedVariantStock);
-    await Product.findByIdAndUpdate(id, { $set: { stock: totalStock } });
+    await Product.findByIdAndUpdate(id, {
+      $set: {
+        stock: totalStock,
+        colors: nextColors,
+        sizes: nextSizes,
+        variantStock: normalizedVariantStock,
+      },
+    });
 
     return res.status(200).json({
       success: true,
       data: {
         productId: id,
+        colors: nextColors,
+        sizes: nextSizes,
         variantStock: normalizedVariantStock,
         stock: totalStock,
       },
@@ -915,10 +1093,181 @@ exports.deleteProduct = async (req, res) => {
 };
 
 exports.getOrders = async (req, res) => {
-  return res.status(200).json({
-    success: true,
-    data: [],
-  });
+  try {
+    const orders = await Order.find().sort({ createdAt: -1 }).lean();
+
+    const normalizedOrders = orders.map((order) => {
+      const items = Array.isArray(order.items) ? order.items : [];
+      const firstItem = items[0] || {};
+
+      const normalizedStatus = String(order.status || '').trim().toLowerCase();
+      const orderStatus =
+        normalizedStatus === 'confirmed'
+          ? 'Pending'
+          : normalizedStatus
+              ? `${normalizedStatus.charAt(0).toUpperCase()}${normalizedStatus.slice(1)}`
+              : 'Pending';
+
+      const isPaid = String(order.paymentStatus || '').trim().toLowerCase() === 'paid';
+      const totalQuantity = items.reduce((sum, item) => sum + Math.max(1, Number(item?.quantity) || 1), 0);
+
+      const lineItems = items.map((item) => {
+        const quantity = Math.max(1, Number(item?.quantity) || 1);
+        const unitPrice = Math.max(0, Number(item?.price) || 0);
+
+        return {
+          productId: String(item?.productId || '').trim(),
+          productName: String(item?.name || '').trim(),
+          name: String(item?.name || '').trim(),
+          imageUrl: String(item?.imageUrl || '').trim(),
+          sku: String(item?.sku || '').trim(),
+          color: String(item?.color || '').trim(),
+          size: String(item?.size || '').trim(),
+          quantity,
+          items: quantity,
+          price: unitPrice,
+          unitPrice,
+          amount: Math.round(unitPrice * quantity * 100) / 100,
+          totalAmount: Math.round(unitPrice * quantity * 100) / 100,
+        };
+      });
+
+      return {
+        id: String(order._id),
+        _id: String(order._id),
+        orderNumber: String(order.orderNumber || '').trim(),
+        customer: String(order?.customer?.fullName || '').trim() || 'Unknown Customer',
+        name: String(order?.customer?.fullName || '').trim() || 'Unknown Customer',
+        email: String(order?.customer?.email || '').trim(),
+        contactNumber: String(order?.customer?.phone || '').trim(),
+        phone: String(order?.customer?.phone || '').trim(),
+        address: String(order?.customer?.address || '').trim(),
+        product: String(firstItem?.name || '').trim(),
+        productName: String(firstItem?.name || '').trim(),
+        imageUrl: String(firstItem?.imageUrl || '').trim(),
+        sku: String(firstItem?.sku || '').trim(),
+        color: String(firstItem?.color || '').trim(),
+        size: String(firstItem?.size || '').trim(),
+        quantity: Math.max(1, Number(firstItem?.quantity) || totalQuantity || 1),
+        items: totalQuantity,
+        paid: isPaid,
+        paymentStatus: isPaid ? 'Paid' : 'Unpaid',
+        status: normalizedStatus || 'pending',
+        orderStatus,
+        amount: Math.max(0, Number(order.totalAmount) || 0),
+        totalAmount: Math.max(0, Number(order.totalAmount) || 0),
+        subtotal: Math.max(0, Number(order.subtotal) || 0),
+        lineItems,
+        products: lineItems,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: normalizedOrders,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load orders',
+      error: error.message,
+    });
+  }
+};
+
+exports.declineOrder = async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    const { id } = req.params;
+    const declineReason = String(req.body?.reason || '').trim();
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order id is required',
+      });
+    }
+
+    session.startTransaction();
+
+    const order = await Order.findById(id).session(session);
+    if (!order) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
+    }
+
+    await restoreStockFromOrder(order, session);
+    const archived = await storeDeclinedOrder(order, { declineReason }, session);
+    await Order.deleteOne({ _id: id }).session(session);
+
+    await session.commitTransaction();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        declinedOrderId: String(archived._id),
+        orderId: id,
+        declineReason: String(archived.declineReason || ''),
+      },
+      message: 'Order declined successfully',
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to decline order',
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+exports.approveOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order id is required',
+      });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found',
+      });
+    }
+
+    order.status = 'processing';
+    order.approved = true;
+    order.approvedAt = new Date();
+    await order.save();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        orderId: id,
+        status: order.status,
+      },
+      message: 'Order approved successfully',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to approve order',
+      error: error.message,
+    });
+  }
 };
 
 exports.getUsers = async (req, res) => {
