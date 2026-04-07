@@ -4,6 +4,7 @@ const Order = require('../models/Order');
 const Stock = require('../models/Stock');
 const User = require('../models/User');
 const DeclinedOrder = require('../models/DeclinedOrder');
+const { storeDeclinedOrder } = require('../services/declinedOrderService');
 const {
   upsertProductStock,
   getStocksByProductIds,
@@ -1204,16 +1205,7 @@ exports.declineOrder = async (req, res) => {
 
     await restoreStockFromOrder(order, session);
     
-    const declineReasonStr = String(declineReason || '').trim();
-    const [archived] = await DeclinedOrder.create([
-      {
-        originalOrderId: order._id,
-        orderNumber: String(order.orderNumber || '').trim(),
-        declineReason: declineReasonStr,
-        orderSnapshot: order.toObject ? order.toObject() : order,
-        declinedAt: new Date(),
-      }
-    ], { session });
+    const archived = await storeDeclinedOrder(order, declineReason, session);
     
     await Order.deleteOne({ _id: id }).session(session);
 
