@@ -14,6 +14,11 @@ const toReviewDto = (review) => ({
 
 exports.getReviews = async (req, res) => {
   try {
+    console.log('[Reviews Controller] GET /reviews', {
+      type: req.query?.type,
+      limit: req.query?.limit,
+    });
+    
     const reviewType = String(req.query?.type || '').trim().toLowerCase();
     const limit = Number(req.query?.limit || 0);
     const query = {};
@@ -31,12 +36,15 @@ exports.getReviews = async (req, res) => {
     }
 
     const reviews = await findQuery.lean();
+    
+    console.log('[Reviews Controller] Found', reviews.length, 'reviews');
 
     return res.status(200).json({
       success: true,
       data: reviews.map(toReviewDto),
     });
   } catch (error) {
+    console.error('[Reviews Controller] Error in getReviews:', error);
     return res.status(500).json({
       success: false,
       message: 'Failed to load reviews',
@@ -47,6 +55,10 @@ exports.getReviews = async (req, res) => {
 
 exports.createReview = async (req, res) => {
   try {
+    console.log('[Reviews Controller] POST /reviews', {
+      body: req.body,
+    });
+
     const customerName = String(req.body?.customerName || 'Anonymous').trim() || 'Anonymous';
     const comment = String(req.body?.comment || '').trim();
     const rawRating = Number(req.body?.rating || 0);
@@ -56,6 +68,7 @@ exports.createReview = async (req, res) => {
     const externalId = String(req.body?.externalId || '').trim();
 
     if (!comment) {
+      console.log('[Reviews Controller] Validation failed: missing comment');
       return res.status(400).json({
         success: false,
         message: 'comment is required',
@@ -63,6 +76,10 @@ exports.createReview = async (req, res) => {
     }
 
     if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+      console.log('[Reviews Controller] Validation failed: invalid rating', {
+        rawRating,
+        rating
+      });
       return res.status(400).json({
         success: false,
         message: 'rating must be between 1 and 5',
@@ -72,6 +89,7 @@ exports.createReview = async (req, res) => {
     if (externalId) {
       const existing = await Review.findOne({ externalId }).lean();
       if (existing) {
+        console.log('[Reviews Controller] Review already exists:', existing._id);
         return res.status(200).json({
           success: true,
           data: toReviewDto(existing),
@@ -89,12 +107,19 @@ exports.createReview = async (req, res) => {
       externalId,
     });
 
+    console.log('[Reviews Controller] Review created successfully:', {
+      id: created._id,
+      customerName,
+      rating,
+    });
+
     return res.status(201).json({
       success: true,
       data: toReviewDto(created),
       message: 'Review added successfully',
     });
   } catch (error) {
+    console.error('[Reviews Controller] Error in createReview:', error);
     return res.status(500).json({
       success: false,
       message: 'Failed to create review',
@@ -107,7 +132,10 @@ exports.deleteReview = async (req, res) => {
   try {
     const reviewId = String(req.params?.id || '').trim();
 
+    console.log('[Reviews Controller] DELETE /reviews/:id', { id: reviewId });
+
     if (!reviewId) {
+      console.log('[Reviews Controller] Validation failed: missing id');
       return res.status(400).json({
         success: false,
         message: 'review id is required',
@@ -117,11 +145,14 @@ exports.deleteReview = async (req, res) => {
     const deleted = await Review.findByIdAndDelete(reviewId);
 
     if (!deleted) {
+      console.log('[Reviews Controller] Review not found:', reviewId);
       return res.status(404).json({
         success: false,
         message: 'Review not found',
       });
     }
+
+    console.log('[Reviews Controller] Review deleted successfully:', reviewId);
 
     return res.status(200).json({
       success: true,
@@ -129,6 +160,7 @@ exports.deleteReview = async (req, res) => {
       message: 'Review deleted successfully',
     });
   } catch (error) {
+    console.error('[Reviews Controller] Error in deleteReview:', error);
     return res.status(500).json({
       success: false,
       message: 'Failed to delete review',
