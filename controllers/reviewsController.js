@@ -10,6 +10,7 @@ const toReviewDto = (review) => ({
   externalId: String(review.externalId || ''),
   createdAt: review.createdAt,
   updatedAt: review.updatedAt,
+  deletedAt: review.deletedAt || undefined,
 });
 
 exports.getReviews = async (req, res) => {
@@ -21,7 +22,8 @@ exports.getReviews = async (req, res) => {
     
     const reviewType = String(req.query?.type || '').trim().toLowerCase();
     const limit = Number(req.query?.limit || 0);
-    const query = {};
+    const page = Math.max(1, Number(req.query?.page || 1));
+    const query = { deletedAt: null };
 
     if (reviewType === 'product') {
       query.productName = { $ne: '' };
@@ -29,19 +31,27 @@ exports.getReviews = async (req, res) => {
       query.productName = '';
     }
 
+    const skip = (page - 1) * (limit || 10);
     let findQuery = Review.find(query).sort({ createdAt: -1 });
 
     if (Number.isFinite(limit) && limit > 0) {
-      findQuery = findQuery.limit(Math.floor(limit));
+      findQuery = findQuery.skip(skip).limit(Math.floor(limit));
     }
 
     const reviews = await findQuery.lean();
+    const total = await Review.countDocuments(query);
     
-    console.log('[Reviews Controller] Found', reviews.length, 'reviews');
+    console.log('[Reviews Controller] Found', reviews.length, 'reviews (page', page, ')');
 
     return res.status(200).json({
       success: true,
       data: reviews.map(toReviewDto),
+      pagination: {
+        page,
+        limit: limit || 10,
+        total,
+        totalPages: limit ? Math.ceil(total / limit) : 1,
+      },
     });
   } catch (error) {
     console.error('[Reviews Controller] Error in getReviews:', error);
@@ -142,7 +152,11 @@ exports.deleteReview = async (req, res) => {
       });
     }
 
-    const deleted = await Review.findByIdAndDelete(reviewId);
+    const deleted = await Review.findByIdAndUpdate(
+      reviewId,
+      { deletedAt: new Date() },
+      { new: true }
+    );
 
     if (!deleted) {
       console.log('[Reviews Controller] Review not found:', reviewId);
@@ -152,7 +166,7 @@ exports.deleteReview = async (req, res) => {
       });
     }
 
-    console.log('[Reviews Controller] Review deleted successfully:', reviewId);
+    console.log('[Reviews Controller] Review soft deleted successfully:', reviewId);
 
     return res.status(200).json({
       success: true,
@@ -164,6 +178,116 @@ exports.deleteReview = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to delete review',
+      error: error.message,
+    });
+  }
+};
+
+exports.getDeletedReviews = async (req, res) => {
+  try {
+    console.log('[Reviews Controller] GET /reviews/deleted');
+    
+    const limit = Number(req.query?.limit || 10);
+    const page = Math.max(1, Number(req.query?.page || 1));
+    const skip = (page - 1) * limit;
+
+    const reviews = await Review.find({ deletedAt: { $ne: null } })
+      .sort({ deletedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const total = await Review.countDocuments({ deletedAt: { $ne: null } });
+
+    console.log('[Reviews Controller] Found', reviews.length, 'deleted reviews');
+
+    return res.status(200).json({
+      success: true,
+      data: reviews.map(toReviewDto),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('[Reviews Controller] Error in getDeletedReviews:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load deleted reviews',
+      error: error.message,
+    });
+  }
+};
+
+exports.restoreReview = async (req, res) => {
+  try {
+    const reviewId = String(req.params?.id || '').trim();
+
+    console.log('[Reviews Controller] RESTORE /reviews/:id', { id: reviewId });
+
+    if (!reviewId) {
+      return res.status(400).json({
+        success: false,
+        message: 'review id is required',
+      });
+    }
+
+    const restored = await Review.findByIdAndUpdate(
+      reviewId,
+      { deletedAt: null },
+      { new: true }
+    );
+
+    if (!restored) {
+      console.log('[Reviews Controller] Review not found:', reviewId);
+      return res.status(404).json({
+        success: false,
+        message: 'Review not found',
+      });
+    }
+
+    console.log('[Reviews Controller] Review restored successfully:', reviewId);
+
+    return res.status(200).json({
+      success: true,
+      data: toReviewDto(restored),
+      message: 'Review restored successfully',
+    });
+  } catch (error) {
+    console.error('[Reviews Controller] Error in restoreReview:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to restore review',
+      error: error.message,
+    });
+  }
+};
+
+exports.permanentlyDeleteOldReviews = async (req, res) => {
+  try {
+    console.log('[Reviews Controller] Permanently deleting reviews older than 1 month');
+
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+
+    const result = await Review.deleteMany({
+      deletedAt: { $ne: null, $lte: oneMonthAgo },
+    });
+
+    console.log('[Reviews Controller] Permanently deleted', result.deletedCount, 'old reviews');
+
+    return res.status(200).json({
+      success: true,
+      message: `Permanently deleted ${result.deletedCount} old reviews`,
+      data: { deletedCount: result.deletedCount },
+    });
+  } catch (error) {
+    console.error('[Reviews Controller] Error in permanentlyDeleteOldReviews:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to permanently delete old reviews',
       error: error.message,
     });
   }
