@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Stock = require('../models/Stock');
-const DeclinedOrder = require('../declined-orders/DeclinedOrder');
+const DeclinedOrder = require('../models/DeclinedOrder');
 
 const normalizeVariantKey = (value = '') => String(value || '').trim().toLowerCase();
 const escapeRegex = (value = '') => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

@@ -14,6 +14,7 @@ const {
   backfillProductDressType,
   deleteProduct,
   getOrders,
+  getDeclinedOrders,
   declineOrder,
   approveOrder,
   getUsers,
@@ -35,6 +36,7 @@ router.put('/products/:id/stock', updateProductStock);
 router.post('/products/backfill/dress-type', backfillProductDressType);
 router.delete('/products/:id', deleteProduct);
 router.get('/orders', getOrders);
+router.get('/orders/declined', getDeclinedOrders);
 router.post('/orders/:id/decline', declineOrder);
 router.post('/orders/:id/approve', approveOrder);
 router.get('/users', getUsers);

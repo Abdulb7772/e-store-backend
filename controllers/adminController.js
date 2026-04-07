@@ -3,7 +3,7 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Stock = require('../models/Stock');
 const User = require('../models/User');
-const { storeDeclinedOrder } = require('../declined-orders/declinedOrderService');
+const DeclinedOrder = require('../models/DeclinedOrder');
 const {
   upsertProductStock,
   getStocksByProductIds,
@@ -1203,7 +1203,18 @@ exports.declineOrder = async (req, res) => {
     }
 
     await restoreStockFromOrder(order, session);
-    const archived = await storeDeclinedOrder(order, { declineReason }, session);
+    
+    const declineReasonStr = String(declineReason || '').trim();
+    const [archived] = await DeclinedOrder.create([
+      {
+        originalOrderId: order._id,
+        orderNumber: String(order.orderNumber || '').trim(),
+        declineReason: declineReasonStr,
+        orderSnapshot: order.toObject ? order.toObject() : order,
+        declinedAt: new Date(),
+      }
+    ], { session });
+    
     await Order.deleteOne({ _id: id }).session(session);
 
     await session.commitTransaction();
@@ -1286,6 +1297,56 @@ exports.getUsers = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to load users',
+      error: error.message,
+    });
+  }
+};
+
+exports.getDeclinedOrders = async (req, res) => {
+  try {
+    const declinedOrders = await DeclinedOrder.find().sort({ declinedAt: -1, createdAt: -1 }).lean();
+
+    const normalizedDeclined = declinedOrders.map((entry) => {
+      const snapshot = entry.orderSnapshot || {};
+      const items = Array.isArray(snapshot.items) ? snapshot.items : [];
+      const firstItem = items[0] || {};
+
+      return {
+        id: String(entry.originalOrderId || entry._id),
+        _id: String(entry._id),
+        orderNumber: String(entry.orderNumber || snapshot.orderNumber || '').trim(),
+        customer: String(snapshot?.customer?.fullName || '').trim() || 'Unknown Customer',
+        name: String(snapshot?.customer?.fullName || '').trim() || 'Unknown Customer',
+        email: String(snapshot?.customer?.email || '').trim(),
+        contactNumber: String(snapshot?.customer?.phone || '').trim(),
+        phone: String(snapshot?.customer?.phone || '').trim(),
+        address: String(snapshot?.customer?.address || '').trim(),
+        product: String(firstItem?.name || '').trim(),
+        productName: String(firstItem?.name || '').trim(),
+        imageUrl: String(firstItem?.imageUrl || '').trim(),
+        sku: String(firstItem?.sku || '').trim(),
+        color: String(firstItem?.color || '').trim(),
+        size: String(firstItem?.size || '').trim(),
+        quantity: Math.max(1, Number(firstItem?.quantity) || 1),
+        items: Math.max(1, Number(firstItem?.quantity) || 1),
+        paid: String(snapshot.paymentStatus || '').trim().toLowerCase() === 'paid',
+        paymentStatus: String(snapshot.paymentStatus || '').trim().toLowerCase() === 'paid' ? 'Paid' : 'Unpaid',
+        status: 'Declined',
+        orderStatus: 'Declined',
+        declineReason: String(entry.declineReason || '').trim(),
+        createdAt: entry.declinedAt || snapshot.createdAt || new Date(),
+        declinedAt: entry.declinedAt,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: normalizedDeclined,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to load declined orders',
       error: error.message,
     });
   }
