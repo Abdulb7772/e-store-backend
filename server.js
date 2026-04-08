@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const path = require('path');
 const connectDB = require('./config/database');
 
 // Load environment variables
@@ -12,12 +13,68 @@ connectDB();
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002', 'http://localhost:3003'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Serve static files from public folder
+const publicPath = path.join(__dirname, 'public');
+console.log('[Server] Environment Config:', {
+  BACKEND_URL: process.env.BACKEND_URL,
+  NODE_ENV: process.env.NODE_ENV,
+  PORT: process.env.PORT,
+});
+console.log('[Server] Serving static files from:', publicPath);
+app.use('/public', express.static(publicPath, { maxAge: '1d' }));
+
+// Debug route to check environment and file status
+app.get('/api/debug', (req, res) => {
+  const fs = require('fs');
+  const uploadsPath = path.join(publicPath, 'uploads');
+  const stats = fs.existsSync(uploadsPath) ? fs.statSync(uploadsPath) : null;
+  const files = fs.existsSync(uploadsPath) ? fs.readdirSync(uploadsPath) : [];
+  
+  res.json({
+    status: 'ok',
+    env: {
+      BACKEND_URL: process.env.BACKEND_URL,
+      NODE_ENV: process.env.NODE_ENV,
+    },
+    paths: {
+      publicPath,
+      uploadsPath,
+    },
+    uploads: {
+      exists: fs.existsSync(uploadsPath),
+      isDirectory: stats ? stats.isDirectory() : false,
+      files: files.slice(0, 10), // Show first 10 files
+      count: files.length,
+    },
+  });
+});
+
+// Test static file serving
+app.get('/api/test-static', (req, res) => {
+  const fs = require('fs');
+  const uploadsPath = path.join(publicPath, 'uploads');
+  const exists = fs.existsSync(uploadsPath);
+  const files = exists ? fs.readdirSync(uploadsPath) : [];
+  res.json({
+    staticPath: publicPath,
+    uploadsPath,
+    uploadsExists: exists,
+    files,
+  });
+});
+
 // Routes
 app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/users', require('./routes/usersRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/reviews', require('./routes/reviewsRoutes'));
 app.use('/api/favorites', require('./routes/favoriteRoutes'));

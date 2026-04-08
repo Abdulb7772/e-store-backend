@@ -53,11 +53,13 @@ exports.signup = async (req, res) => {
         data: {
           _id: user._id,
           emailPhone: user.emailPhone,
+          email: user.emailPhone,
           username: user.username,
           firstName: user.firstName,
           lastName: user.lastName,
           address: user.address,
-          phoneNumber: user.phoneNumber,
+          phone: user.phoneNumber,
+          profilePicture: user.profilePicture,
           role: user.role,
           token: generateToken(user._id),
         },
@@ -127,11 +129,13 @@ exports.signin = async (req, res) => {
       data: {
         _id: user._id,
         emailPhone: user.emailPhone,
+        email: user.emailPhone,
         username: user.username,
         firstName: user.firstName,
         lastName: user.lastName,
         address: user.address,
-        phoneNumber: user.phoneNumber,
+        phone: user.phoneNumber,
+        profilePicture: user.profilePicture,
         role: user.role,
         token: generateToken(user._id),
       },
@@ -155,7 +159,18 @@ exports.getMe = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: user,
+      data: {
+        _id: user._id,
+        emailPhone: user.emailPhone,
+        email: user.emailPhone,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        address: user.address,
+        phone: user.phoneNumber,
+        profilePicture: user.profilePicture,
+        role: user.role,
+      },
     });
   } catch (error) {
     console.error('Get profile error:', error);
