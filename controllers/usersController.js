@@ -51,8 +51,21 @@ exports.uploadProfilePicture = async (req, res) => {
     const fileExists = fs.existsSync(filepath);
     console.log('[Users Controller] File exists after save:', fileExists);
 
-    // Generate public URL - use relative path for local development
-    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    // Generate public URL - use environment variable or detect from request
+    let backendUrl = process.env.BACKEND_URL;
+    
+    // Fallback: if not set, use the request origin
+    if (!backendUrl) {
+      const protocol = req.protocol || 'https';
+      const host = req.get('host') || req.hostname;
+      // If running on localhost, use localhost, otherwise use https
+      if (host.includes('localhost')) {
+        backendUrl = `http://localhost:5000`;
+      } else {
+        backendUrl = `${protocol}://${host}`;
+      }
+    }
+    
     const imageUrl = `${backendUrl}/public/uploads/${filename}`;
 
     console.log('[Users Controller] Image URL config:', {
@@ -60,6 +73,8 @@ exports.uploadProfilePicture = async (req, res) => {
       backendUrl,
       filename,
       imageUrl,
+      requestHost: req.get('host'),
+      requestProtocol: req.protocol,
     });
 
     // Update user with image URL
