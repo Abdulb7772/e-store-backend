@@ -156,6 +156,13 @@ exports.getProfile = async (req, res) => {
       });
     }
 
+    // Clear invalid localhost URLs from profile pictures
+    if (user.profilePicture && user.profilePicture.includes('localhost')) {
+      console.log('[Users Controller] Clearing invalid localhost profilePicture URL:', user.profilePicture);
+      user.profilePicture = null;
+      await user.save();
+    }
+
     res.status(200).json({
       success: true,
       data: {
